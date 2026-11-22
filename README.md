@@ -2,7 +2,7 @@
 
 Aluminum 是自研的 x86 内核，**不基于 Linux**，不包含任何 Linux 源码。它自带引导协议（Multiboot2）、图形输出（VBE/GOP framebuffer）、PS/2 键盘、ATA/AHCI PIO 读盘、MBR/GPT 分区识别、CPU/内存探测，以及一套内置图形仪表盘。
 
-仓库只放内核。ISXo 系统层与界面是闭源软件，只随发布提供二进制，禁止反编译。
+仓库只放内核。Alumine 系统层与界面是闭源软件，只随发布提供二进制，禁止反编译。
 
 ## 现状（v1.0）
 

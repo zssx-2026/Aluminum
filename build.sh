@@ -19,4 +19,4 @@ mmd -i build/efi.img ::/EFI
 mmd -i build/efi.img ::/EFI/BOOT
 mcopy -i build/efi.img build/iso/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 xorriso -as mkisofs -quiet -b boot/grub/bios.img -no-emul-boot -boot-load-size 4 -boot-info-table \
-  -eltorito-alt-boot -e ../efi.img -no-emul-boot -isohybrid-gpt-basdat -o "$OUT/Aluminum-1.0-x86_64.iso" build/iso
+  -eltorito-alt-boot -e ../efi.img -no-emul-boot -isohybrid-gpt-basdat -o "$OUT/Alumine-1.0-x86_64.iso" build/iso
