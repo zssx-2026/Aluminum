@@ -1,0 +1,35 @@
+ISXo 1.0 专有软件许可 / Proprietary License
+==============================================
+
+一、授权范围
+1. 允许在您自有或经授权的设备（含虚拟机）上安装、运行本软件，用于个人使用或组织内部使用。
+2. 允许为备份目的复制本发布包中的二进制文件。
+
+二、禁止行为
+1. 不得反向工程、反编译、反汇编、解密或以其他方式试图获取本软件的源代码、算法或内部结构。
+2. 不得修改、拆分、再打包本软件的二进制文件，或将其嵌入其他产品对外分发。
+3. 不得将本软件作为付费服务对外提供（包括云主机租赁、托管、代运维中的软件授权再分发），除非取得书面授权。
+4. 不得移除或遮盖本软件中的版权、商标与许可标识。
+
+三、源代码
+本软件为用户态闭源软件，不提供源代码。本软件通过系统调用与 Linux 内核交互；
+内核为 GPL-2.0 许可，其配置与构建脚本见 https://github.com/zssx-2026/Aluminum 。
+发布包中的 GRUB、BusyBox 等第三方 GPL 组件仍适用其各自许可证，源码可从上游项目获取。
+
+四、免责
+本软件按“现状”提供，不附带任何明示或默示担保。在适用法律允许的最大范围内，
+作者不对使用本软件造成的任何直接或间接损失承担责任。
+
+五、终止
+违反上述任一条款，本许可自动终止，您须停止使用并删除全部副本。
+
+------------------------------------------------------------------
+ISXo 1.0 Proprietary License (summary)
+
+You may install and run this software on devices you own or are authorised to use.
+You may not reverse engineer, decompile, disassemble, modify, repackage or redistribute
+the binaries, nor offer it as a paid service, without written permission.
+No source code is provided for the ISXo user-space. The Linux kernel is GPL-2.0; its
+configuration and build scripts are published at the Aluminum repository above.
+GRUB and BusyBox components remain under their own GPL licenses.
+The software is provided "AS IS", without warranty of any kind.
