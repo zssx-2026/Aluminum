@@ -4,6 +4,19 @@ typedef unsigned long long u64;
 
 #include "font8.h"
 #include "cjk.h"
+#include "fat32.h"
+#ifdef NO_EMBED
+static const unsigned char emb_kernel[]={0};
+static const unsigned emb_kernel_len=0;
+static const unsigned char emb_efi[]={0};
+static const unsigned emb_efi_len=0;
+static const unsigned char emb_boot[]={0};
+static const unsigned emb_boot_len=0;
+static const unsigned char emb_core[]={0};
+static const unsigned emb_core_len=0;
+#else
+#include "embeds.h"
+#endif
 
 static inline void outb(u16 p, u8 v){ __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
 static inline u8 inb(u16 p){ u8 r; __asm__ volatile("inb %1,%0":"=a"(r):"Nd"(p)); return r; }
@@ -38,7 +51,8 @@ static void box(int x,int y,int w,int h,u32 fill,u32 edge){
 }
 static void atext(int x,int y,const char*s,u32 c,int sc){
     for(;*s;s++){
-        const unsigned char *g=font8[font_index((u8)*s)];
+        unsigned char ch=(u8)*s; if(ch<32||ch>126) ch=' ';
+        const unsigned char *g=font8[font_index(ch)];
         for(int r=0;r<8;r++) for(int col=0;col<8;col++) if(g[r]&(1<<(7-col)))
             for(int sy=0;sy<sc;sy++) for(int sx=0;sx<sc;sx++) put(x+col*sc+sx,y+r*sc+sy,c);
         x+=9*sc;
@@ -157,7 +171,7 @@ static int ata_identify(u16 base,u8 drv,u64 *sectors,char *model){
     if(!*sectors){ *sectors=((u64)buf[103]<<16|buf[100]) | ((u64)((buf[102]<<16)|buf[101])<<32); }
     return 0;
 }
-static int ata_read(u16 base,u8 drv,u32 lba,u8 *out){
+int ata_read(u16 base,u8 drv,u32 lba,u8 *out){
     outb(base+6,0xE0|(drv<<4)|((lba>>24)&15));
     outb(base+2,1); outb(base+3,lba&255); outb(base+4,(lba>>8)&255); outb(base+5,(lba>>16)&255); outb(base+7,0x20);
     ata_wait(); for(int i=0;i<100000;i++){ u8 s=inb(base+7); if(s&8) break; if(s&1) return -1; }
@@ -165,8 +179,18 @@ static int ata_read(u16 base,u8 drv,u32 lba,u8 *out){
     return 0;
 }
 
+int ata_write(u16 base,u8 drv,u32 lba,const u8 *in){
+    outb(base+6,0xE0|(drv<<4)|((lba>>24)&15));
+    outb(base+2,1); outb(base+3,lba&255); outb(base+4,(lba>>8)&255); outb(base+5,(lba>>16)&255); outb(base+7,0x30);
+    ata_wait(); for(int i=0;i<100000;i++){ u8 st=inb(base+7); if(st&8) break; if(st&1) return -1; }
+    for(int i=0;i<256;i++){ u16 v=in[i*2]|(in[i*2+1]<<8); outw(base,v); }
+    for(int i=0;i<200000;i++){ u8 st=inb(base+7); if(!(st&0x80)&&(st&0x40)) break; if(st&1) return -1; }
+    outb(base+7,0xE7); for(int i=0;i<200000;i++){ u8 st=inb(base+7); if(!(st&0x80)) break; }
+    return 0;
+}
+
 /* ---- disks ---- */
-typedef struct { char model[41]; u64 sectors; u8 mbr[512]; int parts; } disk_t;
+typedef struct { char model[41]; u64 sectors; u8 mbr[512]; int parts; u16 base; u8 drv; u32 part_start[4]; u8 part_type[4]; u32 part_size[4]; } disk_t;
 static disk_t disks[4]; static int ndisks;
 static void disks_probe(void){
     u16 bases[2]={0x1F0,0x170};
@@ -174,11 +198,17 @@ static void disks_probe(void){
         u64 sec=0; char m[41];
         if(ata_identify(bases[b],d,&sec,m)==0 && sec>=2048){
             ser_puts("ata: "); ser_puts(m); ser_puts(" sec="); ser_dec(sec); ser_putc('\n');
-            disk_t *dk=&disks[ndisks]; *dk=(disk_t){0};
+            disk_t *dk=&disks[ndisks]; *dk=(disk_t){0}; dk->base=bases[b]; dk->drv=d;
             for(int i=0;i<40;i++) dk->model[i]=m[i]; dk->sectors=sec;
             if(ndisks<4 && ata_read(bases[b],d,0,dk->mbr)==0){
                 if(dk->mbr[510]==0x55 && dk->mbr[511]==0xAA){
-                    for(int i=0;i<4;i++) if(dk->mbr[446+i*16+4]) dk->parts++;
+                    for(int i=0;i<4;i++){
+                        u8 *e=dk->mbr+446+i*16;
+                        if(!e[4]) continue;
+                        dk->parts++; dk->part_type[i]=e[4];
+                        dk->part_start[i]=(u32)e[8]|((u32)e[9]<<8)|((u32)e[10]<<16)|((u32)e[11]<<24);
+                        dk->part_size[i]=(u32)e[12]|((u32)e[13]<<8)|((u32)e[14]<<16)|((u32)e[15]<<24);
+                    }
                 }
             }
             ndisks++;
@@ -187,16 +217,83 @@ static void disks_probe(void){
 }
 
 /* ---- power ---- */
-static void reboot_pc(void){ outb(0x64,0xFE); for(;;) __asm__ volatile("hlt"); }
-static void poweroff_pc(void){
-    outw(0x604,0x2000); outw(0xB004,0x2000);
-    for(int i=0;i<1000;i++) outb(0x80,0);
-    outw(0x604,0x2001);
-    for(;;) __asm__ volatile("cli;hlt");
+static void reboot_pc(void){
+    /* keyboard-controller reset first; never poke random ACPI/PM ports */
+    for(int i=0;i<200000;i++){ if(!(inb(0x64)&2)) break; }
+    outb(0x64,0xFE);
+    /* fallback: triple fault through an empty IDT */
+    struct { u16 lim; u32 base; } __attribute__((packed)) idt={0,0};
+    __asm__ volatile("lidt %0; int3"::"m"(idt));
+    for(;;) __asm__ volatile("hlt");
 }
 
 /* ---- screens ---- */
 static int zh_ui=0;
+static char inst_status[96]="press 3 to install";
+static const char bios_cfg[] =
+"insmod part_msdos\ninsmod part_gpt\ninsmod fat\n"
+"search --no-floppy --file --set=root /ALUMINUM.ELF\n"
+"multiboot2 /ALUMINUM.ELF\nboot\n";
+
+static int write_boot_cfg(fat32_t *fs){
+    u32 b=0,g=0;
+    if(fat32_dir_lookup(fs,fs->root_cluster,"BOOT       ")) b=fat32_dir_lookup(fs,fs->root_cluster,"BOOT       ");
+    if(!b && fat32_mkdir(fs,fs->root_cluster,"BOOT       ",&b)) return -1;
+    if(fat32_dir_lookup(fs,b,"GRUB       ")) g=fat32_dir_lookup(fs,b,"GRUB       ");
+    if(!g && fat32_mkdir(fs,b,"GRUB       ",&g)) return -2;
+    u32 fo=0,sz=0;
+    if(fat32_write_file_ex(fs,g,"GRUB    CFG",(const u8*)bios_cfg,sizeof(bios_cfg)-1,&fo,&sz)) return -3;
+    return 0;
+}
+
+static int write_bios_boot(disk_t *dk,int p){
+    u32 start=dk->part_start[p];
+    u32 csec=(emb_core_len+511)/512;
+    if(start < csec+2) return -40;
+    u8 sec[512];
+    for(int i=0;i<512;i++) sec[i]=(i< (int)emb_boot_len)?emb_boot[i]:0;
+    for(int i=440;i<512;i++) sec[i]=dk->mbr[i];
+    sec[510]=0x55; sec[511]=0xAA;
+    if(ata_write(dk->base,dk->drv,0,sec)) return -41;
+    for(u32 s=0;s<csec;s++){
+        for(int i=0;i<512;i++) sec[i]=0;
+        for(int i=0;i<512;i++){ u32 off=s*512+i; if(off<emb_core_len) sec[i]=emb_core[off]; }
+        if(ata_write(dk->base,dk->drv,1+s,sec)) return -42;
+    }
+    return 0;
+}
+
+static int do_install(void){
+    if(!emb_kernel_len) return -30;
+    for(int d=0; d<ndisks; d++){
+        disk_t *dk=&disks[d];
+        for(int p=0;p<4;p++){
+            u8 ty=dk->part_type[p];
+            if(!(ty==0x0C||ty==0x0B||ty==0x06||ty==0x01||ty==0x04)) continue;
+            fat32_t fs;
+            if(fat32_mount(&fs,dk->drv,dk->base,dk->part_start[p])) continue;
+            ser_puts("install: fat32 on "); ser_puts(dk->model); ser_puts(" part"); ser_dec(p+1); ser_putc('\n');
+            u32 fo=0,sz=0;
+            ser_puts("install: writing kernel "); ser_dec(emb_kernel_len); ser_puts(" bytes\n");
+            int r=fat32_write_file(&fs,"ALUMINUMELF",emb_kernel,emb_kernel_len,&fo,&sz);
+            if(r){ ser_puts("install: kernel write failed "); ser_dec(r); ser_putc('\n'); return r; }
+            u32 efi=fat32_dir_lookup(&fs,fs.root_cluster,"EFI        ");
+            if(!efi && fat32_mkdir(&fs,fs.root_cluster,"EFI        ",&efi)) return -10;
+            u32 bo=fat32_dir_lookup(&fs,efi,"BOOT       ");
+            if(!bo && fat32_mkdir(&fs,efi,"BOOT       ",&bo)) return -11;
+            ser_puts("install: kernel ok, writing efi\n");
+            if(fat32_write_file_ex(&fs,bo,"BOOTX64 EFI",emb_efi,emb_efi_len,&fo,&sz)) return -12;
+            ser_puts("install: efi ok, writing grub.cfg\n");
+            if(write_boot_cfg(&fs)) return -13;
+            ser_puts("install: cfg ok, writing BIOS boot\n");
+            int br=write_bios_boot(dk,p);
+            if(br){ ser_puts("install: bios boot skipped "); ser_dec(br); ser_putc('\n'); }
+            ser_puts("install: done, kernel bytes="); ser_dec(emb_kernel_len); ser_puts(" efi bytes="); ser_dec(emb_efi_len); ser_putc('\n');
+            return 0;
+        }
+    }
+    return -20;
+}
 static void draw_language(void){
     clear(BG);
     box(0,0,W,72,PANEL,EDGE);
@@ -212,59 +309,56 @@ static void draw_language(void){
     atext(24,H-40,"ALUMINUM 1.0  /  BIOS+UEFI  /  no Linux inside",DIM,1);
 }
 
+static void u2s(u64 v,char*out){ char r[24]; int k=0; if(!v) r[k++]='0'; while(v){ r[k++]='0'+v%10; v/=10; } int i=0; while(k) out[i++]=r[--k]; out[i]=0; }
+static void fitcpy(char*dst,const char*src,int max){ int i=0; for(;src[i]&&i<max;i++){ unsigned char c=(unsigned char)src[i]; dst[i]=(c>=32&&c<=126)?c:' '; } dst[i]=0; }
 static void draw_gui(void){
     clear(BG);
     box(0,0,W,64,PANEL,EDGE);
     atext(24,16,"ALUMINUM 1.0",ACC,3);
-    ltext(410,22,"系统控制台","SYSTEM CONSOLE",DIM,1,zh_ui);
-    atext(W-150,26,"NO-LINUX",WARN,2);
+    atext(W-160,26,"NO-LINUX",WARN,2);
 
-    box(24,84,W-48,74,PANEL,EDGE);
-    atext(40,96,"CPU",ACC,2);
-    if(brand[0]) atext(120,96,brand,TXT,2);
-    else { atext(120,96,vendor,TXT,2); }
-    char b[80]; int n=0;
-    /* cores */
-    { char t[16]; int i=0; if(cores==0)t[i++]='0'; int c=cores; char r[8]; int k=0; while(c){r[k++]='0'+c%10;c/=10;} while(k)t[i++]=r[--k]; t[i]=0;
-      for(int j=0;i>0;j++){ b[n++]=t[j%i]; if(j+1>=i)break; } }
-    /* simpler: rebuild */
-    n=0; { char t[12]; int i=0,c=cores; if(!c)t[i++]='0'; char r[8]; int k=0; while(c){r[k++]='0'+c%10;c/=10;} while(k)t[i++]=r[--k]; t[i]=0; for(int j=0;t[j];j++) b[n++]=t[j]; }
-    ltext(40,130,"核心","CORES",DIM,2,zh_ui);
-    atext(40+ (zh_ui?78:tw("CORES",2)+10),130,b,DIM,2);
-    atext(330,130,"MEM",DIM,2);
-    { char t[12]; int i=0,v=mem_upper_kb/1024; if(!v)t[i++]='0'; char r[8]; int k=0; while(v){r[k++]='0'+v%10;v/=10;} while(k)t[i++]=r[--k]; t[i]=0;
-      atext(400,130,t,TXT,2); atext(400+ tw(t,2),130,"MB",DIM,2); }
+    /* CPU */
+    box(24,84,W-48,86,PANEL,EDGE);
+    atext(40,98,"CPU",ACC,2);
+    char t[64];
+    fitcpy(t, brand[0]?brand:vendor, 40);
+    atext(110,98,t,TXT,2);
+    char c1[32],c2[32],m1[32];
+    u2s(cores,c1); u2s(mem_upper_kb/1024,m1);
+    atext(40,136,"CORES",DIM,1); atext(40+tw("CORES",1)+8,136,c1,TXT,1);
+    atext(150,136,"MEM",DIM,1); atext(150+tw("MEM",1)+8,136,m1,TXT,1);
+    atext(150+tw("MEM",1)+8+tw(m1,1)+6,136,"MB",DIM,1);
 
-    box(24,172,(W-60)/2,214,PANEL,EDGE);
-    ltext(40,184,"磁盘","DISKS",ACC,2,zh_ui);
-    int y=214;
-    for(int i=0;i<ndisks && i<4;i++){
-        char line[80]; int p=0;
-        for(int j=0;disks[i].model[j] && j<24;j++) line[p++]=disks[i].model[j];
-        line[p]=0;
-        atext(40,y,line,TXT,2); y+=24;
-        char sz[24]; u64 gb=disks[i].sectors/2048; int k=0; char r[24]; if(!gb)r[k++]='0'; while(gb){r[k++]='0'+gb%10;gb/=10;} while(k)sz[24-1-(--k)]=0;
-        /* build size string */
-        int m=0; char ss[24]; u64 g2=disks[i].sectors/2048; if(!g2) ss[m++]='0'; char rr[20]; int kk=0; while(g2){rr[kk++]='0'+g2%10;g2/=10;} while(kk) ss[m++]=rr[--kk]; ss[m]=0;
-        atext(40,y,ss,DIM,2); atext(40+ tw(ss,2),y,"MB",DIM,2);
-        char pc[16]; int q=0; pc[q++]='0'+disks[i].parts; pc[q]=0;
-        atext(150,y,"parts",DIM,2); atext(240,y,pc,TXT,2);
-        y+=30;
+    /* disks */
+    box(24,182,(W-60)*3/5,150,PANEL,EDGE);
+    atext(40,194,"DISKS",ACC,2);
+    int y=226;
+    for(int i=0;i<ndisks && i<3;i++){
+        char line[64]; fitcpy(line, disks[i].model, 26);
+        atext(40,y,line,TXT,2);
+        char sz[24],g[24]; u2s(disks[i].sectors/2048,g);
+        u2s(disks[i].parts, sz);
+        atext(40,y+24,g,DIM,1); atext(40+tw(g,1)+4,y+24,"MB",DIM,1);
+        atext(110,y+24,"PART",DIM,1); atext(110+tw("PART",1)+4,y+24,sz,TXT,1);
+        y+=44;
     }
-    if(!ndisks) atext(40,214,"none",DIM,2);
+    if(!ndisks) atext(40,226,"none",DIM,2);
 
-    box(24+(W-60)/2+12,172,(W-60)/2,214,PANEL,EDGE);
-    ltext(36+(W-60)/2+12,184,"安装","INSTALL",ACC,2,zh_ui);
-    atext(36+(W-60)/2+12,220,"target: FAT32 volume",DIM,2);
-    atext(36+(W-60)/2+12,250,"phase 2: writer + GRUB entry",DIM,2);
-    atext(36+(W-60)/2+12,286,"boot: BIOS + UEFI",DIM,2);
+    /* install */
+    box(24+(W-60)*3/5+12,182,W-60-(W-60)*3/5-12,150,PANEL,EDGE);
+    atext(36+(W-60)*3/5+12,194,"INSTALL",ACC,2);
+    if(emb_kernel_len){
+        atext(36+(W-60)*3/5+12,232,"FAT32 volume",DIM,1);
+        atext(36+(W-60)*3/5+12,252,"BIOS + UEFI",DIM,1);
+        atext(36+(W-60)*3/5+12,284,inst_status,ACC,2);
+    } else {
+        atext(36+(W-60)*3/5+12,232,"SYSTEM READY",ACC,2);
+    }
 
-    box(24,402,W-48,64,PANEL,EDGE);
-    atext(40,418,"KEYS  [1]LANG  [2]REFRESH  [6]REBOOT  [7]POWEROFF",DIM,2);
-    atext(40,442,"ALUMINUM 1.0  x86_64  /  independent kernel, no Linux",DIM,1);
-    atext(24,H-30,"(C) ISXo / Aluminum project",DIM,1);
+    box(24,352,W-48,48,PANEL,EDGE);
+    atext(40,366,"[1]LANG  [2]REDRAW  [3]INSTALL  [6]REBOOT",DIM,2);
+    atext(24,H-28,"(C) Alumine / Aluminum project",DIM,1);
 }
-
 void kmain(u32 mb_addr){
     ser_init(); ser_puts("aluminum: entry\n");
     mb_parse(mb_addr);
@@ -286,7 +380,7 @@ void kmain(u32 mb_addr){
         if(!c) continue;
         if(c=='1'){ zh_ui=!zh_ui; draw_gui(); }
         else if(c=='2'||c=='r'||c=='R') draw_gui();
+        else if(c=='3'){ int r=do_install(); if(r) { int i=0; inst_status[i++]='E'; inst_status[i++]='R'; inst_status[i++]='R'; inst_status[i++]=' '; inst_status[i]=0; } else { int i=0; const char *ok="OK: ALUMINE written"; for(;*ok;i++) inst_status[i]=*ok; inst_status[i]=0; } draw_gui(); }
         else if(c=='6') reboot_pc();
-        else if(c=='7') poweroff_pc();
     }
 }
