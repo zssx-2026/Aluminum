@@ -1,36 +1,36 @@
 # Aluminum
 
-Aluminum 是 ISXo 操作系统使用的定制 Linux 6.12 内核（x86_64），面向虚拟机与低资源设备做了极限裁剪：无模块、全内建、无 DRM/声卡/无线/调试，启动即可用。
+Aluminum 是自研的 x86 内核，**不基于 Linux**，不包含任何 Linux 源码。它自带引导协议（Multiboot2）、图形输出（VBE/GOP framebuffer）、PS/2 键盘、ATA/AHCI PIO 读盘、MBR/GPT 分区识别、CPU/内存探测，以及一套内置图形仪表盘。
 
-本仓库**只包含内核**。ISXo 系统层（用户态、安装器、管理面、图形界面）是闭源商业软件，不在此仓库，也不允许反编译——见发布附件 `LICENSE-ISXO.txt`。
+仓库只放内核。ISXo 系统层与界面是闭源软件，只随发布提供二进制，禁止反编译。
 
-## 构成
+## 现状（v1.0）
 
-| 文件 | 说明 |
-| --- | --- |
-| `kernel/aluminum.config` | 完整内核配置（`make tinyconfig` + 合并后约 975 项 `=y`） |
-| `kernel/build.sh` | 复现构建脚本（拉取 linux-6.12、合并配置、编译 bzImage） |
-| `kernel/README.md` | 构建细节、内建命令行、已知取舍 |
-| `docs/` | 启动参数、磁盘与引导布局说明 |
+- BIOS 与 UEFI 双启动（GRUB 只承担装载，进入内核后完全自主）
+- 首屏语言选择：`[1] English` / `[2] 中文`
+- 1024x768x32 图形界面：CPU 型号/核心数、内存、磁盘与分区数、安装面板
+- 键盘快捷键：`1` 切换语言，`2` 重绘，`6` 重启，`7` 关机
+- 串口日志（115200 8N1），便于无屏调试
 
-## 和上游的关系
-
-内核源码为 **Linux 6.12（vanilla，kernel.org）**，没有源码级补丁；Aluminum 的差异全部体现在 `aluminum.config`（编译选项）与内建命令行。因此按 GPL-2.0 提供源码的方式是：`kernel/build.sh` 下载与 `linux-6.12.tar.xz` 完全一致的官方源码，套用本仓库配置即可得到逐字节等价的构建结果。
+## 构建
 
 ```
-cd kernel && ./build.sh          # 需要 gcc、make、bison、flex、bc、xz、libelf
+./build.sh          # 产出 dist/Aluminum-1.0-x86_64.iso
 ```
 
-产物：`arch/x86/boot/bzImage`（约 3.9 MB）。
+依赖：`gcc -m32`、`ld`、`grub-mkimage`、`xorriso`（或 `grub-mkrescue`）。
 
-## 主要裁剪
+## 目录
 
-- `CONFIG_MODULES=n`，驱动全部内建；无 initrd 依赖也可启动（本系统仍带 initramfs 用于挂载与安装）
-- 关闭 DRM、声卡、无线、蓝牙、swap、BPF、KASAN/KCSAN、debug info
-- `HZ_100`、`NO_HZ_IDLE`、`PREEMPT_NONE`、`CC_OPTIMIZE_FOR_PERFORMANCE`
-- 保留 `FB_VESA`、`FB_EFI`、`FRAMEBUFFER_CONSOLE`，供 BIOS(VBE) 与 UEFI(GOP) 双模式的图形控制台
-- 内建命令行：`console=tty0 console=ttyS0,115200n8 isxo=auto`
+- `src/boot.S`：Multiboot2 头（含 framebuffer 请求）、栈、入口
+- `src/kernel.c`：内核主体（串口、framebuffer、字体、键盘、CPU/内存/磁盘探测、界面）
+- `src/font8.h` / `src/cjk.h`：ASCII 8x8 与中文 16x16 点阵
+- `grub/menu.cfg`：引导菜单（语言选择在这里也可选）
+
+## 路线（未完成）
+
+驱动层继续补 AHCI/NVMe/USB、FAT32 写入、安装器与自有引导项；网络层自研隧道；GPU 加速；用户态组件与 Chromium 预览。内核按模块用 C/汇编实现，Rust 与 C++ 模块通过固定 ABI 接入；Python/Java/C# 只作为用户态运行时，不进内核。
 
 ## 许可
 
-内核部分为 GPL-2.0（见 `LICENSE`）。ISXo 用户态为专有软件，单独授权。
+内核源码 GPL-2.0（见 `LICENSE`）。
